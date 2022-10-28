@@ -1,9 +1,12 @@
-on: push
+on:
+  push:
+  workflow_dispatch:
 name: deploy
 jobs:
   build-and-push:
     name: build and push image
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
     steps:
     - uses: actions/checkout@master
     - name: build and push to docker
@@ -18,46 +21,51 @@ jobs:
   deploy-to-cluster:
     name: deploy to cluster
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      HOLA: test
     needs: build-and-push
     steps:
-    - name: deploy to cluster
-      uses: steebchen/kubectl@master
-      env:
-        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      with:
-        args: kustomize edit set image prueba-gha=${{ github.repository }}:${{ github.sha }} && kubectl kustomize build . | kubectl apply -f -
-    - name: verify deployment
-      uses: steebchen/kubectl@master
-      env:
-        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-        KUBECTL_VERSION: "1.20"
-      with:
-        args: '"-n prueba rollout status deployment/prueba"'
-  ngrok-watcher:
-    name: Ngrok watcher
-    runs-on: ubuntu-latest
-    needs: deploy-to-cluster
-    steps:
-    - name: Get ngrok URL
-      id: getNgrokUrl
-      uses: debianmaster/kubectl@master
-      env:
-        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-        KUBECTL_VERSION: "1.20"
-      with:
-        args: |
-          URL=`kubectl -n prueba get ngrok -o=custom-columns='DATA:status.url' | tail -n1`
-
-          while [[ $URL != *"ngrok"* ]]; do
-            echo "Still not ready" && sleep 5
-          done
-
-          echo "::set-output name=url::$URL"
     - uses: actions/checkout@master
+    - name: deploy to cluster
+      uses: yokawasa/action-setup-kube-tools@v0.4.0
+      with:
+        kubectl: '1.20.2'
+        kustomize: '3.7.0'
+    - name: kubectl
+      id: kubectl
+      run: |
+        mkdir -p ~/.kube/
+        echo $KUBE_CONFIG_DATA | base64 -d > ~/.kube/config
+        cd .kustomize
+        kustomize edit set image prueba-gha=${{ github.repository }}:${{ github.sha }}
+        kustomize build . | kubectl apply -f -
+        kubectl -n prueba rollout status deployment/prueba-gha
+        URL=`kubectl -n prueba get ngrok -o=custom-columns='DATA:status.url' | tail -n1`
+
+        while [[ $URL != *"ngrok"* ]]; do
+          echo "Still not ready" && sleep 5
+          URL=`kubectl -n prueba get ngrok -o=custom-columns='DATA:status.url' | tail -n1`
+        done
+
+        echo "::set-output name=url::$URL"
     - name: Add Ngrok URL comment to PR
-      uses: harupy/comment-on-pr@master
+      uses: unsplash/comment-on-pr@master
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        URL: ${{ steps.getNgrokUrl.outputs.url }}
       with:
-        filename: comment-template.md
+        msg: "URL for environment is: ${{ steps.kubectl.outputs.url }}"
+  integration_test_log:
+    name: Information about the integration test execution
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    env:
+      GITHUB_CONTEXT: ${{ toJson(github) }}
+    steps:
+      - name: Show Information
+        run: |
+          echo "This workflow run is triggered by ${{ github.event_name }} ."
+          echo " *****************************************************************************"
+          echo "$GITHUB_CONTEXT"
+          echo " *****************************************************************************"

@@ -1,12 +1,9 @@
-on:
-  push:
-  workflow_dispatch:
+on: push
 name: deploy
 jobs:
   build-and-push:
     name: build and push image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
     steps:
     - uses: actions/checkout@master
     - name: build and push to docker
@@ -21,51 +18,45 @@ jobs:
   deploy-to-cluster:
     name: deploy to cluster
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    env:
-      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      HOLA: test
     needs: build-and-push
     steps:
-    - uses: actions/checkout@master
     - name: deploy to cluster
-      uses: yokawasa/action-setup-kube-tools@v0.4.0
-      with:
-        kubectl: '1.20.2'
-        kustomize: '3.7.0'
-    - name: kubectl
-      id: kubectl
-      run: |
-        mkdir -p ~/.kube/
-        echo $KUBE_CONFIG_DATA | base64 -d > ~/.kube/config
-        cd .kustomize
-        kustomize edit set image prueba-gha=${{ github.repository }}:${{ github.sha }}
-        kustomize build . | kubectl apply -f -
-        kubectl -n prueba rollout status deployment/prueba-gha
-        URL=`kubectl -n prueba get ngrok -o=custom-columns='DATA:status.url' | tail -n1`
-
-        while [[ $URL != *"ngrok"* ]]; do
-          echo "Still not ready" && sleep 5
-          URL=`kubectl -n prueba get ngrok -o=custom-columns='DATA:status.url' | tail -n1`
-        done
-
-        echo "::set-output name=url::$URL"
-    - name: Add Ngrok URL comment to PR
-      uses: unsplash/comment-on-pr@master
+      uses: steebchen/kubectl@master
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       with:
-        msg: "URL for environment is: ${{ steps.kubectl.outputs.url }}"
-  integration_test_log:
-    name: Information about the integration test execution
+        args: set image --record deployment/my-app prueba-gha=${{ github.repository }}:${{ github.sha }}
+    - name: verify deployment
+      uses: steebchen/kubectl@master
+      env:
+        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        KUBECTL_VERSION: "1.20"
+      with:
+        args: '"rollout status deployment/my-app"'
+  ngrok-watcher:
+    name: Ngrok watcher
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    env:
-      GITHUB_CONTEXT: ${{ toJson(github) }}
+    needs: deploy-to-cluster
     steps:
-      - name: Show Information
-        run: |
-          echo "This workflow run is triggered by ${{ github.event_name }} ."
-          echo " *****************************************************************************"
-          echo "$GITHUB_CONTEXT"
-          echo " *****************************************************************************"
+    - name: Get ngrok URL
+      id: getNgrokUrl
+      uses: debianmaster/kubectl@master
+      env:
+        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        KUBECTL_VERSION: "1.20"
+      with:
+        args: |
+          URL=`kubectl -n prueba get ngrok -o=custom-columns='DATA:status.url' | tail -n1` 
+          echo "::set-output name=url::$URL"
+    # - name: Check if URL is valid
+    #   uses: ubuntu-latest
+    #   run: |
+    #     echo "URL is: ${{ steps.getNgrokUrl.outputs.url }}"
+      # - name: Watch ngrok
+      # uses: steebchen/kubectl@master
+      # env:
+      #   KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      #   KUBECTL_VERSION: "1.20"
+      # run: echo "Hello world"
+      # # with:
+      # #   args: '"rollout status deployment/my-app"'
